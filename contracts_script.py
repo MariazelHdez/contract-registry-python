@@ -1,47 +1,76 @@
-# from selenium import webdriver
-# from selenium.webdriver.common.by import By
-# from selenium.webdriver.support.ui import WebDriverWait, Select
-# from selenium.webdriver.support import expected_conditions as EC
-# from datetime import datetime
-# import pandas as pd
-# import time
-# import requests
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.support import expected_conditions as EC
+from datetime import datetime
+import pandas as pd
+import time
+import requests
 import csv
 import psycopg2
 from psycopg2 import sql
 import chardet
+#from selenium_stealth import stealth
 
 ## SOLUTION #1: BEGIN THE CAPTCHA SOLVED USING 2CAPTCHA (We need to pay for it: https://2captcha.com/enterpage)
 
 # # Set up the WebDriver (make sure the driver is in your PATH)
-# driver = webdriver.Chrome()
+driver = webdriver.Chrome()
+
+#stealth(driver,
+#    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36",
+#    webgl_vendor='Intel Inc.',
+#    webgl_renderer='Intel Iris OpenGL Engine',
+#   fix_hairline=True,
+#    run_on_insecure=True,
+#    platform='Win32',
+#    ua_languages=["en-US", "en"]  # Set valid language preferences
+#)
 
 # # Open the webpage
-# driver.get('https://service.yukon.ca/apps/contract-registry')
+driver.get('https://service.yukon.ca/apps/contract-registry')
 
-# driver.save_screenshot("captcha.png")
+# Captcha needs to load
+time.sleep(3)
+
+# Take a screenshot of the CAPTCHA and save it
+driver.save_screenshot("captcha.png")
 
 # # Upload the CAPTCHA image to 2Captcha
-# api_key = '2c33ca4e0cc4ad9ec06f50e8c4a3eea9'
-# captcha_file = {'file': open('captcha.png', 'rb')}
-# response = requests.post(f"http://2captcha.com/in.php?key={api_key}&method=post", files=captcha_file)
+api_key = '49d57f37aa02dc2135a7b3bc8ff4a1a3'
+captcha_file = {'file': open('captcha.png', 'rb')}
+response = requests.post(f"http://2captcha.com/in.php?key={api_key}&method=post", files=captcha_file)
 
-# print(response.text)
-# captcha_id = response.text.split('|')[1]
+print(response.text)
+captcha_id = response.text.split('|')[1]
 
 # # Wait for the CAPTCHA to be solved
-# result = requests.get(f"http://2captcha.com/res.php?key={api_key}&action=get&id={captcha_id}")
-# while 'CAPCHA_NOT_READY' in result.text:
-#     time.sleep(5)
-#     result = requests.get(f"http://2captcha.com/res.php?key={api_key}&action=get&id={captcha_id}")
+# Wait for the CAPTCHA to be solved
+result = requests.get(f"http://2captcha.com/res.php?key={api_key}&action=get&id={captcha_id}")
 
-# # Get the CAPTCHA solution
-# captcha_solution = result.text.split('|')[1]
+# Loop until the CAPTCHA is solved or fails after a timeout
+timeout = time.time() + 60
+while time.time() < timeout:
+    if 'CAPCHA_NOT_READY' in result.text:
+        time.sleep(5)
+        result = requests.get(f"http://2captcha.com/res.php?key={api_key}&action=get&id={captcha_id}")
+    elif "OK" in result.text:
+        captcha_solution = result.text.split('|')[1]
+        break
+    else:
+        print(f"Error getting CAPTCHA solution: {result.text}")
+        exit()
 
-# # Enter the solution on the page
-# captcha_input = driver.find_element(By.ID, 'cf-chl-widget-s1xxq_response')
-# captcha_input.send_keys(captcha_solution)
-# time.sleep(5)
+
+if 'captcha_solution' not in locals():
+    print("CAPTCHA was not solved within the timeout period.")
+    exit()
+
+# Enter the solution on the page
+captcha_input = driver.find_element(By.ID, 'cf-chl-widget-s1xxq_response')
+captcha_input.send_keys(captcha_solution)
+time.sleep(5)
+
 
 ## END THE CAPTCHA SOLVED USING 2CAPTCHA (We need to pay for it: https://2captcha.com/enterpage)
 
@@ -80,47 +109,47 @@ import chardet
 
 ## BEGIN: FILLED THE SEARCH PAGE
 # Wait until the element is present in the DOM and visible
-# select_element_start = WebDriverWait(driver, 20).until(
-#     EC.presence_of_element_located((By.ID, 'P500_FISCAL_YEAR_FROM'))
-# )
+select_element_start = WebDriverWait(driver, 20).until(
+    EC.presence_of_element_located((By.ID, 'P500_FISCAL_YEAR_FROM'))
+)
 
-# select_element_end = WebDriverWait(driver, 20).until(
-#     EC.presence_of_element_located((By.ID, 'P500_FISCAL_YEAR_TO'))
-# )
+select_element_end = WebDriverWait(driver, 20).until(
+    EC.presence_of_element_located((By.ID, 'P500_FISCAL_YEAR_TO'))
+)
 
-# select_start = Select(select_element_start)
-# select_end = Select(select_element_end)
+select_start = Select(select_element_start)
+select_end = Select(select_element_end)
 
 # # Check if the select has available options
-# end_options = select_end.options
+end_options = select_end.options
 
-# if len(end_options) > 0:
-#     print(f"Options found: {len(end_options)}")
+if len(end_options) > 0:
+    print(f"Options found: {len(end_options)}")
 #     # Select the last option in the start
-#     select_start.select_by_index(len(select_start.options) - 1)  # Last option
+    select_start.select_by_index(len(select_start.options) - 1)  # Last option
 
 #     # Select the first option in the end
-#     #select_end.select_by_index(0)  # First option
-# else:
-#     print("No options found in select_end.")
+    select_end.select_by_index(0)  # First option
+else:
+    print("No options found in select_end.")
 
 #     # Print the element's HTML for manual inspection
-#     print(driver.execute_script("return arguments[0].outerHTML;", select_element_end))
+print(driver.execute_script("return arguments[0].outerHTML;", select_element_end))
 
 
-# time.sleep(2)  # Adjust the time as necessary
+time.sleep(2)  # Adjust the time as necessary
 
 # # Wait until the button is available and select the button based on the class and text
-# search_button = WebDriverWait(driver, 20).until(
-#     EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 't-Button--hot') and .//span[text()='Search']]"))
-# )
+search_button = WebDriverWait(driver, 20).until(
+    EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 't-Button--hot') and .//span[text()='Search']]"))
+)
 
 # # Click the button
-# search_button.click()
+search_button.click()
 
 
 # Wait for the new page to load
-# time.sleep(5)  # Adjust the time as necessary
+time.sleep(5)  # Adjust the time as necessary
 
 # END: FILLED THE SEARCH PAGE
 
@@ -128,27 +157,28 @@ import chardet
 
 # Download the Excel file
 
-# download_button = WebDriverWait(driver, 20).until(
-#     EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 't-Button--hot') and .//span[text()='Download CSV']]"))
-# )
+download_button = WebDriverWait(driver, 20).until(
+    EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 't-Button--hot') and .//span[text()='Download CSV']]"))
+)
 # # Click the button
-# download_button.click()
+download_button.click()
 
 
 # # Wait for the download to complete
-# time.sleep(50)  # Adjust based on file size
+time.sleep(50)  # Adjust based on file size
 # END: DOWNLOAD
 
 
 # Close the browser
-# driver.quit()
+driver.quit()
 
 # Connect to the PostgreSQL database
 conn = psycopg2.connect(
     host="localhost",  # Change to your host if necessary
     database="bizont_contract_registry",  # Change to your database name
-    user="bizont",  # Change to your PostgreSQL user
-    password="Gedani15"  # Change to your PostgreSQL password
+    user="postgres",  # Change to your PostgreSQL user
+    password="root",  # Change to your PostgreSQL password
+    port=5433
 )
 
 # Create a cursor to execute SQL queries
@@ -200,7 +230,7 @@ with open('downloads/contract_list_04_09_2024.csv', mode='r', encoding='ISO-8859
     
     try:
         conn.commit()  # Confirm all correct insertions
-         print(f"Data confirmed. {inserted_count} rows inserted successfully in temp_contracts.")
+        print(f"Data confirmed. {inserted_count} rows inserted successfully in temp_contracts.")
     except Exception as e:
         print(f"Error committing to the database: {e}")
 
