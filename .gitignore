@@ -1,0 +1,50 @@
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.pyo
+*.pyd
+*.pyd
+*.pyd
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Environment variables
+.env
+*.env
+config.ini
+
+# Editor-specific files
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build/Distribution files
+build/
+dist/
+*.egg
+*.egg-info/
+.eggs/
+wheelhouse/
+*.whl
+
+# Database files
+*.sqlite3
+*.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
