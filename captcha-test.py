@@ -1,19 +1,48 @@
 import asyncio
 import os
 import json
-PYPPETEER_CHROMIUM_REVISION = '1263111'
-os.environ['PYPPETEER_CHROMIUM_REVISION'] = PYPPETEER_CHROMIUM_REVISION
-from pyppeteer import launch
-import time
-import requests
-from pyppeteer_stealth import stealth
 import logging
 import traceback
+import time
+import requests
+from urllib.parse import urljoin
+from pyppeteer import launch
+from pyppeteer_stealth import stealth
+from pyppeteer.errors import NetworkError
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Set environment variable to skip Chromium download
+os.environ['PYPPETEER_SKIP_CHROMIUM_DOWNLOAD'] = 'True'
 
 apikey = "49d57f37aa02dc2135a7b3bc8ff4a1a3"
 
+captcha_solved_event = asyncio.Event()
+page_ready_event = asyncio.Event()
+
 async def main():
+    # Find Chrome executable path
+    possible_paths = [
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+        os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'),
+    ]
+
+    chrome_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            chrome_path = path
+            break
+
+    if not chrome_path:
+        print("Chrome executable not found. Please check your installation.")
+        return
+
+    print(f"Using Chrome executable at: {chrome_path}")
+
     browser = await launch(
+        executablePath=chrome_path,
         headless=False,
         devtools=False,
         autoClose=False,
@@ -35,7 +64,7 @@ async def main():
     # Apply stealth techniques
     await stealth(page)
 
-    # Executing the JavaScript code on the page
+    # Inject JavaScript to intercept Cloudflare's Turnstile Captcha
     await page.evaluateOnNewDocument(
         """
         () => {
@@ -53,7 +82,7 @@ async def main():
                           userAgent: navigator.userAgent,
                           json: 1
                       }
-                      // we will intercept the message in puppeteer
+                      // We will intercept this message in Puppeteer
                       console.log('intercepted-params:' + JSON.stringify(params))
                       window.cfCallback = b.callback
                       return
@@ -64,15 +93,14 @@ async def main():
         """
     )
 
-    # Intercept console messages to catch a message containing 'intercepted-params:'
+    # Handle console messages to catch 'intercepted-params'
     async def console_message_handler(msg):
         txt = msg.text
-        print(f"Console message: {txt}")
         if 'intercepted-params:' in txt:
             params = json.loads(txt.replace('intercepted-params:', ''))
             print("Intercepted Params:", params)
             try:
-                # Captcha params
+                # Prepare payload for 2Captcha
                 payload = {
                     "key": apikey,
                     "method": "turnstile",
@@ -84,20 +112,19 @@ async def main():
                     "useragent": params["userAgent"],
                     "json": 1,
                 }
-                # Send captcha to 2captcha
+                # Send Captcha to 2Captcha
                 response = requests.post("https://2captcha.com/in.php", data=payload)
                 print("Captcha sent")
-                print(response.text)
                 captcha_id = response.json()["request"]
                 time.sleep(2)
-                # Getting a captcha response
+                # Retrieve Captcha solution
                 while True:
                     solution = requests.get(
                         f"https://2captcha.com/res.php?key={apikey}&action=get&json=1&id={captcha_id}"
                     ).json()
                     if solution["request"] == "CAPCHA_NOT_READY":
-                        print(solution["request"])
-                        time.sleep(5)  # Increase sleep time to reduce request frequency
+                        print("Captcha not ready, waiting...")
+                        time.sleep(5)
                     elif "ERROR" in solution["request"]:
                         print("Error:", solution["request"])
                         break
@@ -105,141 +132,141 @@ async def main():
                         print("Captcha Solved:", solution)
                         break
 
-                # Use the received captcha response. Pass the answer to the configured callback function `cfCallback`
-
+                # Pass the Captcha solution back to the page
                 await page.evaluate('cfCallback', solution["request"])
 
-                await asyncio.sleep(15)
+                # Signal that the Captcha has been solved
+                captcha_solved_event.set()
 
-                await interactions(page)
+                # Wait for the page to reload after solving the Captcha
+                await page.waitForNavigation({'waitUntil': 'networkidle2', 'timeout': 60000})
+                page_ready_event.set()
 
             except Exception as e:
-                print("An error occurred:", e)
+                print("An error occurred while solving Captcha:", e)
                 await browser.close()
         else:
             return
 
+    # Attach the console message handler
+    page.on('console', lambda msg: asyncio.ensure_future(console_message_handler(msg)))
 
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
+    # Go to the initial page
+    await page.goto('https://service.yukon.ca/apps/contract-registry', waitUntil='networkidle2')
 
-    async def interactions(page):
-        try:
-            await page.waitForSelector('#P500_FISCAL_YEAR_FROM', timeout=60000)
-            await page.waitForSelector('#P500_FISCAL_YEAR_TO', timeout=60000)
+    # If the Captcha appears, wait for it to be solved and page to reload
+    if not page_ready_event.is_set():
+        print("Waiting for page to be ready...")
+        await page_ready_event.wait()
 
-            from_value = None
-            to_value = None
+    await asyncio.sleep(5)
 
-            for attempt in range(3):
-                try:
-                    from_value = await page.evaluate('''() => {
-                        const select = document.querySelector('#P500_FISCAL_YEAR_FROM');
-                        return select ? select.options[select.options.length - 1].value : null;
-                    }''')
-                    if from_value:
-                        await page.select('#P500_FISCAL_YEAR_FROM', from_value)
-                        print(f"Selected last option in #P500_FISCAL_YEAR_FROM: {from_value}")
-                        break
-                except Exception as e:
-                    print(f"Attempt {attempt + 1} failed for #P500_FISCAL_YEAR_FROM: {e}")
-                    await asyncio.sleep(3)
+    await interactions(page)
 
-            for attempt in range(3):
-                try:
-                    to_value = await page.evaluate('''() => {
-                        const select = document.querySelector('#P500_FISCAL_YEAR_TO');
-                        return select ? select.options[0].value : null;
-                    }''')
-                    if to_value:
-                        await page.select('#P500_FISCAL_YEAR_TO', to_value)
-                        print(f"Selected first option in #P500_FISCAL_YEAR_TO: {to_value}")
-                        break
-                except Exception as e:
-                    print(f"Attempt {attempt + 1} failed for #P500_FISCAL_YEAR_TO: {e}")
-                    await asyncio.sleep(3)
+    await browser.close()
 
-            if not from_value or not to_value:
-                raise Exception("Unable to select fiscal year values after multiple attempts.")
+async def interactions(page):
+    try:
+        data_storage = []
+
+        while True:
+
+            pages = await page.browser.pages()
+            page = pages[-1]
+
 
             await page.waitForSelector('#B106150366531214971', timeout=60000)
+
             await page.click('#B106150366531214971')
-            print("Submit button.")
+            print("Submit button clicked.")
 
-            await asyncio.sleep(7)
+            await asyncio.sleep(5)
 
-            # await page.waitForSelector('#B47528447156014705', timeout=60000)
-            # await page.click('#B47528447156014705')
-            # print("Download button.")
-
-            # Process only the first page
+            # Wait for the table to load
             await page.waitForSelector('#report_table_P510_RESULTS', timeout=80000)
             logger.info("Table loaded.")
 
-            # Collect initial data into the modified array
-            modified_array = []
-            data_storage = []
+            # Collect all the rows data into a list, including detail URLs
+            row_data_list = []
 
-            # Extract headers
-            header_cells = await page.querySelectorAll('#report_table_P510_RESULTS thead th')
-            headers = [await page.evaluate('(th) => th.innerText.trim()', th) for th in header_cells]
-
-            # Build the modified array with initial data
+            # Build the row_data_list with data and detail URLs
             rows = await page.querySelectorAll('#report_table_P510_RESULTS tbody tr')
             for row in rows:
                 cells = await row.querySelectorAll('td')
-                cell_values = []
+                row_data = {}
+                detail_url = None
                 for cell in cells:
+                    # Get the header ID from the 'headers' attribute
+                    header_id = await page.evaluate('(cell) => cell.getAttribute("headers")', cell)
+                    # Get the cell text
                     cell_text = await page.evaluate('(cell) => cell.innerText.trim()', cell)
-                    cell_values.append(cell_text)
+                    # Store the cell data with header ID as key
+                    row_data[header_id] = cell_text
 
-                row_data = dict(zip(headers, cell_values))
-                modified_array.append(row_data)
+                    # Check if this cell contains the detail link (in 'FISCAL_YR' cell)
+                    if header_id == 'FISCAL_YR':
+                        link_element = await cell.querySelector('a')
+                        if link_element:
+                            href = await page.evaluate('(a) => a.getAttribute("href")', link_element)
+                            detail_url = urljoin(page.url, href)
+                row_data['detail_url'] = detail_url
+                row_data_list.append(row_data)
 
-            # Process each row
-            while modified_array:
+            # Open a single detail page to reuse
+            detail_page = await page.browser.newPage()
+            await detail_page.setUserAgent(
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/115.0.0.0 Safari/537.36'
+            )
+            await stealth(detail_page)
+
+            # Share cookies and session storage
+            client = await page.target.createCDPSession()
+            cookies = await client.send('Network.getAllCookies')
+            await client.detach()
+
+            client = await detail_page.target.createCDPSession()
+            await client.send('Network.setCookies', {'cookies': cookies['cookies']})
+            await client.detach()
+
+            # Now process each row by detail_url
+            for index, row_data in enumerate(row_data_list):
                 try:
-                    current_row_data = modified_array[0]
-                    contract_no = current_row_data.get('Contract No.')
-                    amount = current_row_data.get('Amount')
+                    contract_no = row_data.get('Contract Number')
+                    amount = row_data.get('Contract Amount')
+                    detail_url = row_data.get('detail_url')
                     logger.info(f"Processing Contract No.: {contract_no}, Amount: {amount}")
 
-                    await page.waitForSelector('#report_table_P510_RESULTS', timeout=80000)
+                    if not detail_url:
+                        logger.warning(f"No detail URL found for Contract No.: {contract_no}")
+                        continue
+
+
+                    response = await detail_page.goto(detail_url)
                     await asyncio.sleep(2)
 
-                    # Re-fetch rows
-                    rows = await page.querySelectorAll('#report_table_P510_RESULTS tbody tr')
-                    row_found = False
-                    for row in rows:
-                        try:
-                            cells = await row.querySelectorAll('td')
-                            if len(cells) >= 5:
-                                contractNoCell = cells[4]  # Adjust index if necessary
-                                amountCell = cells[2]      # Adjust index if necessary
-                                contractNoText = await page.evaluate('(cell) => cell.innerText.trim()', contractNoCell)
-                                amountText = await page.evaluate('(cell) => cell.innerText.trim()', amountCell)
-                                if contractNoText == contract_no and amountText == amount:
-                                    await row.click()
-                                    row_found = True
-                                    logger.info("Clicked on row, waiting for details page to load...")
-                                    break
-                        except Exception as e:
-                            logger.error(f"Error while checking row: {e}")
-                            traceback.print_exc()
 
-                    if not row_found:
-                        logger.warning(f"Row with Contract No.: {contract_no} and Amount: {amount} not found.")
-                        modified_array.pop(0)
+                    if response.status == 403:
+                        logger.warning("Encountered Captcha, waiting for it to be solved...")
+                        # Wait for Captcha to be solved
+                        await captcha_solved_event.wait()
+                        # Captcha solved, retry navigation
+                        response = await detail_page.goto(detail_url)
+                        # Reset the event for future Captcha challenges
+                        captcha_solved_event.clear()
+
+                    if response.status != 200:
+                        logger.error(f"Failed to load detail page for Contract No.: {contract_no}, HTTP status: {response.status}")
                         continue
+
+                    logger.info("Navigated to detail page.")
+                    await asyncio.sleep(4)
 
                     # Wait for the details page to load
-                    try:
-                        await page.waitForSelector('#P520_DESCRIPTION_CONTAINER', timeout=60000)
-                        logger.info("Details page loaded.")
-                    except Exception as e:
-                        logger.error(f"Timeout waiting for details page for Contract No.: {contract_no}: {e}")
-                        await page.goBack()
-                        continue
+                    await detail_page.waitForSelector('#P520_DESCRIPTION_CONTAINER', timeout=60000)
+                    logger.info("Details page loaded.")
+                    await asyncio.sleep(3)
 
                     # Extract details
                     details = {}
@@ -260,7 +287,7 @@ async def main():
                     for container_id in [f'{field[0][:-6]}_CONTAINER' for field in detail_fields]:
                         try:
                             # Extract label and description from the container
-                            title = await page.evaluate(f'''
+                            title = await detail_page.evaluate(f'''
                                 () => {{
                                     const container = document.getElementById('{container_id}');
                                     if (container) {{
@@ -270,7 +297,7 @@ async def main():
                                     return null;
                                 }}
                             ''')
-                            description = await page.evaluate(f'''
+                            description = await detail_page.evaluate(f'''
                                 () => {{
                                     const container = document.getElementById('{container_id}');
                                     if (container) {{
@@ -283,43 +310,57 @@ async def main():
                             if title and description:
                                 details[title] = description
                         except Exception as e:
-                            print(f'Could not extract details from container {container_id}: {e}')
+                            logger.error(f'Could not extract details from container {container_id}: {e}')
 
+                    # Move desired keys from 'details' to 'row_data'
+                    desired_keys = ['Project Manager/Buyer', 'Postal Code', 'Yukon Business', 'Yukon First Nations Business', 'Tender Type']
+
+                    for key in desired_keys:
                     # Store the extracted details
-                    current_row_data['details'] = details
-                    data_storage.append(current_row_data)
-                    await asyncio.sleep(3)
-                    # Click the back button to return to the table page
-                    logger.info("Clicking 'Back' button to return to table page...")
-                    await page.click('#B553373616548922883')
+                        if key in details:
+                            row_data[key] = details[key]
 
-                    # Wait for the table to reappear
-                    await page.waitForSelector('#report_table_P510_RESULTS', timeout=120000)
-                    logger.info("Returned to table page.")
+                    # Remove 'detail_url' from 'row_data' if it's not needed
+                    if 'detail_url' in row_data:
+                        del row_data['detail_url']
 
-                    modified_array.pop(0)
-                    await asyncio.sleep(2)
+                    # Optionally, if 'details' is no longer needed, we can skip assigning it to 'row_data'
+                    data_storage.append(row_data)
+
+                    logger.info(f"Processed and stored details for Contract No.: {contract_no}")
+
+                    # Add a delay to avoid rate limiting
+                    await asyncio.sleep(4)
 
                 except Exception as e:
                     logger.error(f"Exception during processing of Contract No.: {contract_no}: {e}")
                     traceback.print_exc()
-                    modified_array.pop(0)
                     continue
 
-            logger.info("Finished processing all rows on the first page.")
-            logger.info("Extracted Table Data:")
-            logger.info(json.dumps(data_storage, indent=2))
 
-            await page.screenshot({'path': 'after_interaction.png'})
+            await detail_page.close()
+            logger.info("Closed detail page.")
 
-        except Exception as e:
-            logger.error("An error occurred during interactions:", e)
-            traceback.print_exc()
 
-    page.on('console', lambda msg: asyncio.ensure_future(console_message_handler(msg)))
+            next_button = await page.querySelector('.t-Report-paginationLink--next')
+            if next_button:
+                await next_button.click()
+                logger.info("Navigating to next page...")
+                await page.waitForNavigation({'waitUntil': 'networkidle2', 'timeout': 60000})
+                await asyncio.sleep(5)  # Add a small delay to ensure the next page is fully loaded
+            else:
+                logger.info("No more pages left to process.")
+                break
 
-    await page.goto('https://service.yukon.ca/apps/contract-registry', waitUntil='networkidle2')
+        logger.info("Finished processing all rows on all pages.")
+        logger.info("Extracted Table Data:")
+        logger.info(json.dumps(data_storage, indent=2))
 
-    await asyncio.sleep(45)
+        await page.screenshot({'path': 'after_interaction.png'})
 
-asyncio.get_event_loop().run_until_complete(main())
+    except Exception as e:
+        logger.error("An error occurred during interactions: %s", e)
+        traceback.print_exc()
+
+if __name__ == '__main__':
+    asyncio.get_event_loop().run_until_complete(main())
