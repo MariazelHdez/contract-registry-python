@@ -2,6 +2,9 @@ import csv
 import psycopg2
 import os
 import glob
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Access environment variables
 db_user = os.getenv('DB_USER')
@@ -10,6 +13,10 @@ db_host = os.getenv('DB_HOST')
 db_name = os.getenv('DB_NAME')
 db_port = os.getenv('DB_PORT')
 
+print(db_user)
+print(db_password)
+print(db_host)
+print(db_name)
 # Connect to the PostgreSQL database
 conn = psycopg2.connect(
     host=db_host,  
@@ -23,7 +30,7 @@ conn = psycopg2.connect(
 cur = conn.cursor()
 
 # Directory where the CSV files are located
-directory = '/Users/mariazelhernandez/Bizont-Code/contract-registry-python/downloads'
+directory = './downloads'
 
 # Find all CSV files in the directory
 csv_files = glob.glob(os.path.join(directory, '*.csv'))

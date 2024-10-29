@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Set environment variable to skip Chromium download
 os.environ['PYPPETEER_SKIP_CHROMIUM_DOWNLOAD'] = 'True'
 
-apikey = "49d57f37aa02dc2135a7b3bc8ff4a1a3"  # Replace with your actual 2Captcha API key
+apikey = "2c33ca4e0cc4ad9ec06f50e8c4a3eea9"  # Replace with your actual 2Captcha API key
 
 async def setup_captcha_handling(page, captcha_solved_event, stop_script_flag, page_ready_event=None):
     # Inject JavaScript to intercept Cloudflare's Turnstile Captcha
@@ -370,6 +370,8 @@ async def main():
         r'C:\Program Files\Google\Chrome\Application\chrome.exe',
         r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
         os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'),
+    	'/usr/bin/google-chrome',  # Common path for Linux systems
+	'/usr/local/bin/google-chrome',  # Alternative path in some Linux distributions
     ]
 
     chrome_path = None
