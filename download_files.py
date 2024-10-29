@@ -200,6 +200,28 @@ async def interactions_reports(page, captcha_solved_event, stop_script_flag, bro
 
         print(f"Processing fiscal year range: From {from_year} to {to_year}")
 
+        # Check if CAPTCHA is present and resolve if necessary
+        captcha_present = await page.evaluate('''() => !!document.querySelector('#captcha-element-id')''')
+        
+        if captcha_present:
+            print("CAPTCHA detected. Solving...")
+            await setup_captcha_handling(page, captcha_solved_event, stop_script_flag)
+            
+            # Wait until CAPTCHA is solved
+            await captcha_solved_event.wait()
+            captcha_solved_event.clear()
+            print("CAPTCHA solved.")
+        
+            # Refresh the page after CAPTCHA solution
+            await page.goto('https://service.yukon.ca/apps/contract-registry', {'waitUntil': 'networkidle2'})
+            await asyncio.sleep(5)  # Adjust delay for page reload
+
+        # Proceed with the report download if CAPTCHA is not stopping the script
+        if stop_script_flag.get('stop'):
+            print("Script stopped due to CAPTCHA failure or other issue.")
+            break
+
+        # Attempt to download the report for the specified fiscal years
         success = await download_report(page, from_year, to_year)
 
         if not success:
