@@ -168,51 +168,45 @@ async def process_row(row_data, browser, stop_script_flag, data_storage, invalid
                     retries += 1
                     continue
 
-                if response.status == 403:
-                    # Check if the page content indicates a CAPTCHA or a server-side error
+                # Get page content to check for CAPTCHA indicators
+                page_content = await detail_page.content()
+
+                if 'cf-turnstile' in page_content or 'Cloudflare' in page_content:
+                    logger.warning(f"Encountered CAPTCHA on detail page for Contract No.: {contract_no}, waiting for it to be solved...")
+
+                    await detail_captcha_solved_event.wait()
+
+                    # Wait for navigation after solving the CAPTCHA
                     try:
-                        page_content = await detail_page.content()
-                    except Exception as e:
-                        logger.error(f"Error getting page content for Contract No.: {contract_no}: {e}")
+                        await detail_page.waitForNavigation({'waitUntil': 'networkidle0', 'timeout': 60000})
+                    except TimeoutError:
+                        logger.error(f"Timeout waiting for navigation after solving CAPTCHA for Contract No.: {contract_no}")
                         await detail_page.close()
                         return
 
-                    if 'cf-turnstile' in page_content or 'Cloudflare' in page_content:
-                        logger.warning(f"Encountered CAPTCHA on detail page for Contract No.: {contract_no}, waiting for it to be solved...")
-
-                        await detail_captcha_solved_event.wait()
-
-                        # Wait for navigation after solving the CAPTCHA
-                        try:
-                            await detail_page.waitForNavigation({'waitUntil': 'networkidle0', 'timeout': 60000})
-                        except TimeoutError:
-                            logger.error(f"Timeout waiting for navigation after solving CAPTCHA for Contract No.: {contract_no}")
-                            await detail_page.close()
-                            return
-
-                        if stop_script_flag.get('stop'):
-                            logger.info("Stopping script due to CAPTCHA failure.")
-                            await detail_page.close()
-                            return
-
-                        detail_captcha_solved_event.clear()
-                        retries += 1
-                        continue  # Retry the navigation
-                    else:
-                        logger.error(f"Server-side 403 error on detail page for Contract No.: {contract_no}. Skipping this contract.")
-
-                        # Append the contract number to invalid_contracts
-                        invalid_contracts.append(contract_no)
-
+                    if stop_script_flag.get('stop'):
+                        logger.info("Stopping script due to CAPTCHA failure.")
                         await detail_page.close()
                         return
+
+                    detail_captcha_solved_event.clear()
+                    retries += 1
+                    continue  # Retry the navigation
+                elif response.status == 403:
+                    logger.error(f"Server-side 403 error on detail page for Contract No.: {contract_no}. Skipping this contract.")
+
+                    # Append the contract number to invalid_contracts
+                    invalid_contracts.append(contract_no)
+
+                    await detail_page.close()
+                    return
                 elif response.status != 200:
                     logger.error(f"Failed to load detail page for Contract No.: {contract_no}, HTTP status: {response.status}")
                     retries += 1
                     await asyncio.sleep(4)
                     continue  # Retry the navigation
                 else:
-                    # Page loaded successfully
+                    # Page loaded successfully without CAPTCHA
                     break
             else:
                 logger.error(f"Failed to load detail page for Contract No.: {contract_no} after {max_retries} attempts.")
@@ -227,6 +221,7 @@ async def process_row(row_data, browser, stop_script_flag, data_storage, invalid
 
             # Extract details
             details = {}
+
             detail_fields = [
                 ('P520_DESCRIPTION_LABEL', 'P520_DESCRIPTION'),
                 ('P520_DEPARTMENT_LABEL', 'P520_DEPARTMENT'),
@@ -332,18 +327,24 @@ async def interactions(page, captcha_solved_event, stop_script_flag, browser, fi
 
             row_data_list = []
 
+            # Get header IDs in order
+            header_cells = await page.querySelectorAll('#report_table_P510_RESULTS thead th')
+            header_ids = []
+            for header_cell in header_cells:
+                header_id = await page.evaluate('(cell) => cell.getAttribute("id")', header_cell)
+                header_ids.append(header_id)
+
             rows = await page.querySelectorAll('#report_table_P510_RESULTS tbody tr')
             for row in rows:
                 cells = await row.querySelectorAll('td')
                 row_data = {}
                 detail_url = None
-                for cell in cells:
-                    header_id = await page.evaluate('(cell) => cell.getAttribute("headers")', cell)
+                for index, cell in enumerate(cells):
+                    header_id = header_ids[index]
                     cell_text = await page.evaluate('(cell) => cell.innerText.trim()', cell)
                     row_data[header_id] = cell_text
 
-                    # Check if this cell contains the detail link (in 'FISCAL_YR' cell)
-                    if header_id == 'FISCAL_YR':
+                    if not detail_url:
                         link_element = await cell.querySelector('a')
                         if link_element:
                             href = await page.evaluate('(a) => a.getAttribute("href")', link_element)
@@ -351,12 +352,11 @@ async def interactions(page, captcha_solved_event, stop_script_flag, browser, fi
                 row_data['detail_url'] = detail_url
                 row_data_list.append(row_data)
 
-                tasks = []
-                for row_data in row_data_list:
-                    task = asyncio.ensure_future(process_row(
-                        row_data, browser, stop_script_flag, data_storage, invalid_contracts, semaphore))
-                    tasks.append(task)
-
+            tasks = []
+            for row_data in row_data_list:
+                task = asyncio.ensure_future(process_row(
+                    row_data, browser, stop_script_flag, data_storage, invalid_contracts, semaphore))
+                tasks.append(task)
 
             await asyncio.gather(*tasks)
 
@@ -371,9 +371,9 @@ async def interactions(page, captcha_solved_event, stop_script_flag, browser, fi
 
                 # Save invalid contracts to JSON file after each page
                 invalid_filename = f"{fiscal_year_from}_{fiscal_year_to}_invalid_contracts.json"
-                invalid_contracts_dict = {contract_no: None for contract_no in invalid_contracts}
+                # Save as a list
                 with open(invalid_filename, 'w') as f:
-                    json.dump(invalid_contracts_dict, f, indent=2)
+                    json.dump(invalid_contracts, f, indent=2)
                 logger.info(f"Invalid contracts saved to {invalid_filename} after processing page {page_counter}")
 
             except Exception as e:
@@ -470,7 +470,6 @@ async def main():
         logger.error("Timed out waiting for the page to be ready. Retrying...")
         await page.reload({'waitUntil': 'networkidle2'})
 
-
     # Wait for the select element P500_FISCAL_YEAR_FROM to be available
     await page.waitForSelector('#P500_FISCAL_YEAR_FROM', timeout=60000)
 
@@ -504,7 +503,6 @@ async def main():
     # Store the selected fiscal years, replacing any problematic characters
     fiscal_year_from = last_from_option_text.replace('/', '-')
     fiscal_year_to = first_to_option_text.replace('/', '-')
-
 
     await interactions(page, captcha_solved_event, stop_script_flag, browser, fiscal_year_from, fiscal_year_to)
 
