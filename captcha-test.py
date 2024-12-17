@@ -133,7 +133,10 @@ async def process_row(row_data, browser, stop_script_flag, data_storage, semapho
             await detail_page.setUserAgent(
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                 'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/115.0.0.0 Safari/537.36'
+                'Chrome/115.0.0.0 Safari/537.36',
+                '/usr/bin/google-chrome', 
+                '/usr/local/bin/google-chrome',
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',  # MacOS
             )
             await stealth(detail_page)
 
@@ -372,6 +375,8 @@ async def main():
         os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'),
     	'/usr/bin/google-chrome',  # Common path for Linux systems
 	'/usr/local/bin/google-chrome',  # Alternative path in some Linux distributions
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',  # MacOS
+
     ]
 
     chrome_path = None
