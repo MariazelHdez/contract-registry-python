@@ -23,6 +23,29 @@ download_dir = os.path.join(os.getcwd(), "downloads_script")
 if not os.path.exists(download_dir):
     os.makedirs(download_dir)
 
+def save_progress(year, page, contract_no):
+    progress = {'year': year, 'page': page, 'contract_no': contract_no}
+    with open('progress.json', 'w') as f:
+        json.dump(progress, f)
+
+def load_progress():
+    if os.path.exists('progress.json'):
+        with open('progress.json', 'r') as f:
+            return json.load(f)
+    return {'year': None, 'page': 0, 'contract_no': None}
+
+async def retry_action(action, retries=3, delay=5):
+    for attempt in range(1, retries + 1):
+        try:
+            return await action()
+        except Exception as e:
+            print(f"Attempt {attempt} failed: {e}")
+            if attempt < retries:
+                await asyncio.sleep(delay)
+            else:
+                print("Max retries reached. Moving on.")
+                return None
+            
 async def setup_captcha_handling(page, captcha_solved_event, stop_script_flag, page_ready_event=None):
     # Inject JavaScript to intercept Cloudflare's Turnstile Captcha
     await page.evaluateOnNewDocument(
@@ -233,6 +256,29 @@ async def interactions_reports(page, captcha_solved_event, stop_script_flag, bro
         "2017-18", "2018-19", "2019-20", "2020-21", "2021-22",
         "2022-23", "2023-24", "2024-25"
     ]
+
+    def resume_fiscal_years(fiscal_years, from_year):
+        if from_year in fiscal_years:
+            start_index = fiscal_years.index(from_year)
+            return fiscal_years[start_index:]
+        else:
+            print(f"Warning: {from_year} not found in fiscal_years. Starting from the beginning.")
+            return fiscal_years
+    progress = load_progress()
+    if progress['year']:
+        print(f"Resuming from year: {progress['year']}, page: {progress['page']}, contract: {progress['contract_no']}")
+        # Recortar la lista de años
+        fiscal_years = resume_fiscal_years(fiscal_years, progress['year'])
+    else:
+        print("No saved progress found. Starting from the beginning.")
+
+    print("Fiscal years to process:", fiscal_years)
+
+
+    progress = load_progress()
+    if progress['year']:
+        print(f"Resuming from year: {progress['year']}, page: {progress['page']}, contract: {progress['contract_no']}")
+
     #print("111111.")
     # await page.waitForFunction('document.readyState === "complete"', {'timeout': 40000})
     # print("222222.")
@@ -358,6 +404,8 @@ async def interactions(page, captcha_solved_event, stop_script_flag, browser, fi
                                     detail_url = urljoin(page.url, href)
                         row_data['detail_url'] = detail_url
                         row_data_list.append(row_data)
+                        save_progress(fiscal_year_from, page_counter, row_data['Contract Number'])
+
                     tasks = [
                         asyncio.create_task(process_row(row, browser, stop_script_flag, data_storage, invalid_contracts, semaphore))
                         for row in row_data_list
@@ -365,12 +413,12 @@ async def interactions(page, captcha_solved_event, stop_script_flag, browser, fi
                     print(f"33333")
                     await asyncio.gather(*tasks)
                     print(f"Completed processing page {page_counter + 1}.")
+
                     page_counter += 1
                     await save_incremental_data(data_storage, filename)
                     await save_incremental_data(invalid_contracts, invalid_filename)
                     data_storage.clear()
                     invalid_contracts.clear()
-
                     next_button_selector = '.t-Report-paginationLink--next'
                     next_button = await page.querySelector(next_button_selector)
                     if next_button:
@@ -425,7 +473,11 @@ async def process_row(row_data, browser, stop_script_flag, data_storage, invalid
             retries = 0
             while retries < max_retries:
                 try:
-                    response = await detail_page.goto(detail_url, {'waitUntil': 'networkidle2', 'timeout': 60000})
+                    # response = await detail_page.goto(detail_url, {'waitUntil': 'networkidle2', 'timeout': 60000})
+                    response = await retry_action(lambda: detail_page.goto(detail_url, {'waitUntil': 'networkidle2', 'timeout': 60000}))
+                    if not response:
+                        logger.error(f"Failed to load page after retries: {detail_url}")
+                        return
                     logger.info(f"Loaded detail page for Contract No.: {contract_no}")
                     detail_captcha_solved_event = asyncio.Event()
                     await handle_captcha(detail_page, detail_captcha_solved_event, stop_script_flag,"#P520_DESCRIPTION_LABEL")
