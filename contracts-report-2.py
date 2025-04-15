@@ -29,10 +29,22 @@ def save_progress(year, page, contract_no):
         json.dump(progress, f)
 
 def load_progress():
-    if os.path.exists('progress.json'):
-        with open('progress.json', 'r') as f:
-            return json.load(f)
-    return {'year': None, 'page': 0, 'contract_no': None}
+    progress_file = "progress.json"  # Archivo donde se guarda el progreso
+    if os.path.exists(progress_file):
+        try:
+            # Verifica si el archivo no está vacío
+            if os.path.getsize(progress_file) > 0:
+                with open(progress_file, 'r') as f:
+                    return json.load(f)
+            else:
+                print("Progress file is empty. Returning default progress.")
+                return {"year": None, "page": 0, "contract_no": None}
+        except json.JSONDecodeError:
+            print("Progress file contains invalid JSON. Resetting progress.")
+            return {"year": None, "page": 0, "contract_no": None}
+    else:
+        print("Progress file does not exist. Returning default progress.")
+        return {"year": None, "page": 0, "contract_no": None}
 
 async def retry_action(action, retries=3, delay=5):
     for attempt in range(1, retries + 1):
@@ -265,7 +277,7 @@ async def interactions_reports(page, captcha_solved_event, stop_script_flag, bro
             print(f"Warning: {from_year} not found in fiscal_years. Starting from the beginning.")
             return fiscal_years
     progress = load_progress()
-    if progress['year']:
+    if progress  and  progress['year']:
         print(f"Resuming from year: {progress['year']}, page: {progress['page']}, contract: {progress['contract_no']}")
         # Recortar la lista de años
         fiscal_years = resume_fiscal_years(fiscal_years, progress['year'])
@@ -275,11 +287,7 @@ async def interactions_reports(page, captcha_solved_event, stop_script_flag, bro
     print("Fiscal years to process:", fiscal_years)
 
 
-    progress = load_progress()
-    if progress['year']:
-        print(f"Resuming from year: {progress['year']}, page: {progress['page']}, contract: {progress['contract_no']}")
 
-    #print("111111.")
     # await page.waitForFunction('document.readyState === "complete"', {'timeout': 40000})
     # print("222222.")
     for i in range(len(fiscal_years) - 1):
@@ -626,5 +634,7 @@ async def main():
     await interactions_reports(page, captcha_solved_event, stop_script_flag,browser)
     await browser.close()
 
+# if __name__ == '__main__':
+#     asyncio.get_event_loop().run_until_complete(main())
 if __name__ == '__main__':
-    asyncio.get_event_loop().run_until_complete(main())
+    asyncio.run(main())
