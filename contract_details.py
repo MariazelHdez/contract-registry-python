@@ -42,6 +42,79 @@ def load_processed_contracts():
         return set(json.loads(line)["contract_no"] for line in f if line.strip())
 
 
+def insert_details_into_db(jsonl_path: str) -> None:
+    """Insert contract details stored in a JSONL file into PostgreSQL."""
+    if not os.path.exists(jsonl_path):
+        logger.warning("Progress file not found, nothing to insert")
+        return
+
+    records = []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                records.append(json.loads(line))
+
+    if not records:
+        logger.info("No records to insert into database")
+        return
+
+    columns = [
+        "contract_no",
+        "p520_description",
+        "p520_department",
+        "p520_project_manager",
+        "p520_work_community",
+        "p520_postal_code",
+        "p520_yukon_business",
+        "p520_yfn_business",
+        "p520_contract_type",
+        "p520_tender_type",
+        "p520_tender_class",
+        "p520_soa_number",
+    ]
+
+    conn = psycopg2.connect(**DB_CONFIG)
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS contract_details (
+            contract_no TEXT PRIMARY KEY,
+            p520_description TEXT,
+            p520_department TEXT,
+            p520_project_manager TEXT,
+            p520_work_community TEXT,
+            p520_postal_code TEXT,
+            p520_yukon_business TEXT,
+            p520_yfn_business TEXT,
+            p520_contract_type TEXT,
+            p520_tender_type TEXT,
+            p520_tender_class TEXT,
+            p520_soa_number TEXT
+        )
+        """
+    )
+
+    insert_query = (
+        "INSERT INTO contract_details (" + ",".join(columns) + ") "
+        "VALUES (" + ",".join(["%s"] * len(columns)) + ") "
+        "ON CONFLICT (contract_no) DO NOTHING"
+    )
+
+    values = []
+    for record in records:
+        row = [record.get(col) for col in columns]
+        values.append(row)
+
+    for row in values:
+        cur.execute(insert_query, row)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info("Inserted %d records into contract_details", len(values))
+
+
 async def setup_captcha(page):
     await page.evaluateOnNewDocument("""
         () => {
@@ -103,12 +176,11 @@ async def setup_captcha(page):
 
 
 async def extract_contract_details(page, contract_no):
+    """Navigate to the contract registry and extract details for a contract."""
     await page.goto(YUKON_URL, {'waitUntil': 'networkidle2'})
     await page.waitForSelector('#P500_KEYWORD')
 
-
-
-    # Click and select "From" year
+    # Select fiscal year range
     await page.click('#P500_FISCAL_YEAR_FROM')
     await page.evaluate(
         '''(year) => {
@@ -119,10 +191,25 @@ async def extract_contract_details(page, contract_no):
         "2007-08"
     )
 
-    await asyncio.sleep(2)  # Short delay to ensure options refresh
+    # Wait for the "To" options to refresh before selecting 2025-26
+    await asyncio.sleep(2)
+    to_options = await page.Jeval('#P500_FISCAL_YEAR_TO', '(el) => Array.from(el.options).map(o => o.value)')
+    if "2025-26" in to_options:
+        await page.click('#P500_FISCAL_YEAR_TO')
+        await page.evaluate(
+            '''(year) => {
+                const toSelect = document.querySelector('#P500_FISCAL_YEAR_TO');
+                toSelect.value = year;
+                toSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            }''',
+            "2025-26"
+        )
+    else:
+        logger.warning("Fiscal year 2025-26 not available after selecting 2007-08")
 
+    await asyncio.sleep(1)
 
-
+    # Search for the contract
     await page.evaluate('document.querySelector("#P500_KEYWORD").value = ""')
     await page.type('#P500_KEYWORD', contract_no)
     search_button_selector = '#B106150366531214971'
@@ -204,34 +291,32 @@ async def main():
         ]
     )
 
-    
     page = await browser.newPage()
-
-
     await page.setUserAgent(
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/115.0.0.0 Safari/537.36'
-        )
-    
-
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/115.0.0.0 Safari/537.36'
+    )
 
     await stealth(page)
     await setup_captcha(page)
 
-    for contract_no in contract_numbers:
-        if contract_no in processed:
-            continue
-        try:
-            logger.info(f"Procesando contrato: {contract_no}")
-            detail = await extract_contract_details(page, contract_no)
-            with open(PROGRESS_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps(detail) + "\n")
-        except Exception as e:
-            logger.error(f"Error procesando {contract_no}: {e}")
-            continue
+    try:
+        for contract_no in contract_numbers:
+            if contract_no in processed:
+                continue
+            try:
+                logger.info(f"Procesando contrato: {contract_no}")
+                detail = await extract_contract_details(page, contract_no)
+                with open(PROGRESS_FILE, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(detail) + "\n")
+            except Exception as e:
+                logger.error(f"Error procesando {contract_no}: {e}")
+                continue
+    finally:
+        await browser.close()
 
-    await browser.close()
+    insert_details_into_db(PROGRESS_FILE)
 
 
 if __name__ == "__main__":
