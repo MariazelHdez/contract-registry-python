@@ -319,20 +319,20 @@ async def main():
         ]
     )
 
-    page = await browser.newPage()
-    await page.setUserAgent(
+    user_agent = (
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
         'AppleWebKit/537.36 (KHTML, like Gecko) '
         'Chrome/115.0.0.0 Safari/537.36'
     )
 
-    await stealth(page)
-    await setup_captcha(page)
-
-    try:
-        for contract_no in contract_numbers:
-            if contract_no in processed:
-                continue
+    async def process(contract_no, semaphore):
+        if contract_no in processed:
+            return
+        async with semaphore:
+            page = await browser.newPage()
+            await page.setUserAgent(user_agent)
+            await stealth(page)
+            await setup_captcha(page)
             try:
                 logger.info(f"Procesando contrato: {contract_no}")
                 detail = await extract_contract_details(page, contract_no)
@@ -340,7 +340,13 @@ async def main():
                     f.write(json.dumps(detail) + "\n")
             except Exception as e:
                 logger.error(f"Error procesando {contract_no}: {e}")
-                continue
+            finally:
+                await page.close()
+
+    semaphore = asyncio.Semaphore(os.cpu_count() or 4)
+    tasks = [asyncio.create_task(process(cn, semaphore)) for cn in contract_numbers]
+    try:
+        await asyncio.gather(*tasks)
     finally:
         await browser.close()
 
