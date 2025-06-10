@@ -10,6 +10,7 @@ from pyppeteer_stealth import stealth
 API_KEY = "2c33ca4e0cc4ad9ec06f50e8c4a3eea9"  
 YUKON_URL = 'https://service.yukon.ca/apps/contract-registry'
 PROGRESS_FILE = "contract_details.jsonl"
+MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", 5))
 
 
 # DB config desde entorno
@@ -250,10 +251,8 @@ async def extract_contract_details(page, contract_no):
     if not target_row:
         raise Exception(f"No results found for {contract_no}")
 
-    await asyncio.gather(
-        page.waitForNavigation({'waitUntil': 'networkidle2'}),
-        target_row.click(),
-    )
+    await target_row.click()
+    await page.waitForNavigation({'waitUntil': 'networkidle2'})
 
    
 
@@ -325,6 +324,8 @@ async def main():
         'Chrome/115.0.0.0 Safari/537.36'
     )
 
+    file_lock = asyncio.Lock()
+
     async def process(contract_no, semaphore):
         if contract_no in processed:
             return
@@ -336,17 +337,18 @@ async def main():
             try:
                 logger.info(f"Procesando contrato: {contract_no}")
                 detail = await extract_contract_details(page, contract_no)
-                with open(PROGRESS_FILE, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(detail) + "\n")
+                async with file_lock:
+                    with open(PROGRESS_FILE, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(detail) + "\n")
             except Exception as e:
                 logger.error(f"Error procesando {contract_no}: {e}")
             finally:
                 await page.close()
 
-    semaphore = asyncio.Semaphore(os.cpu_count() or 4)
+    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
     tasks = [asyncio.create_task(process(cn, semaphore)) for cn in contract_numbers]
     try:
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         await browser.close()
 
