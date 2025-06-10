@@ -219,6 +219,7 @@ async def extract_contract_details(page, contract_no):
 
 
     table_selector = '#report_P510_RESULTS'
+    await asyncio.sleep(7)  # Short delay to ensure options refresh
 
     await page.waitForSelector(table_selector, timeout=60000)
     await asyncio.sleep(5)  # Short delay to ensure options refresh
@@ -234,6 +235,8 @@ async def extract_contract_details(page, contract_no):
 
     await page.waitForSelector('#P520_DESCRIPTION_CONTAINER', timeout=60000)
     logger.info("Encontro el container")
+    await asyncio.sleep(5)  # Short delay to ensure options refresh
+
     # Campos deseados
     field_ids = [
         'P520_DESCRIPTION', 'P520_DEPARTMENT', 'P520_PROJECT_MANAGER',
@@ -250,6 +253,7 @@ async def extract_contract_details(page, contract_no):
             detail[field.lower()] = text
         except Exception as e:
             logger.warning(f"No se pudo extraer {field}: {e}")
+    logger.warning(f"Se extrajo")
 
     return detail
 
