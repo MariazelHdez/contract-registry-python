@@ -214,9 +214,16 @@ async def extract_contract_details(page, contract_no):
     await page.type('#P500_KEYWORD', contract_no)
     search_button_selector = '#B106150366531214971'
     await page.waitForSelector(search_button_selector, {'timeout': 20000})
-    await page.click(search_button_selector)
+    await asyncio.gather(
+        page.waitForNavigation({'waitUntil': 'networkidle2'}),
+        page.click(search_button_selector),
+    )
     logger.info("Botón de búsqueda presionado")
 
+    row_selector = 'table.t-Report-report tbody tr'
+
+    await page.waitForSelector(row_selector, timeout=60000)
+    await asyncio.sleep(2)
 
     table_selector = '#report_P510_RESULTS'
     await asyncio.sleep(7)  # Short delay to ensure options refresh
@@ -226,10 +233,27 @@ async def extract_contract_details(page, contract_no):
 
     logger.info("Se termina la espera")
 
+    rows = await page.querySelectorAll(row_selector)
+    target_row = None
+    for row in rows:
+        cell = await row.querySelector('td[headers="Contract Number"]')
+        if cell:
+            text = await page.evaluate('(el) => el.innerText.trim()', cell)
+            if text == contract_no:
+                target_row = row
+                break
+
+    if not target_row:
+        logger.warning(f"Exact row for {contract_no} not found, using first row")
+        target_row = rows[0] if rows else None
+
+    if not target_row:
+        raise Exception(f"No results found for {contract_no}")
+
     await asyncio.gather(
         page.waitForNavigation({'waitUntil': 'networkidle2'}),
-        page.click('table.t-Report-report tbody tr'),
-    )   
+        target_row.click(),
+    )
 
    
 
