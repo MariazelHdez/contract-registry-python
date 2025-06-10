@@ -1,0 +1,238 @@
+import asyncio
+import os
+import json
+import logging
+import psycopg2
+import requests
+from pyppeteer import launch
+from pyppeteer_stealth import stealth
+# CONFIG
+API_KEY = "2c33ca4e0cc4ad9ec06f50e8c4a3eea9"  
+YUKON_URL = 'https://service.yukon.ca/apps/contract-registry'
+PROGRESS_FILE = "contract_details.jsonl"
+
+
+# DB config desde entorno
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST'),
+    'dbname': os.getenv('DB_NAME'),
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASSWORD'),
+    'port': os.getenv('DB_PORT', 5432),
+}
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+def get_contract_numbers():
+    conn = psycopg2.connect(**DB_CONFIG)
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT contract_no FROM contracts")
+    contract_list = [row[0] for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return contract_list
+
+
+def load_processed_contracts():
+    if not os.path.exists(PROGRESS_FILE):
+        return set()
+    with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+        return set(json.loads(line)["contract_no"] for line in f if line.strip())
+
+
+async def setup_captcha(page):
+    await page.evaluateOnNewDocument("""
+        () => {
+          const i = setInterval(() => {
+              if (window.turnstile) {
+                  clearInterval(i)
+                  window.turnstile.render = (a, b) => {
+                      let params = {
+                          sitekey: b.sitekey,
+                          pageurl: window.location.href,
+                          data: b.cData,
+                          pagedata: b.chlPageData,
+                          action: b.action,
+                          userAgent: navigator.userAgent,
+                          json: 1
+                      }
+                      console.log('intercepted-params:' + JSON.stringify(params))
+                      window.cfCallback = b.callback
+                      return
+                  }
+              }
+          }, 50)
+        }
+    """)
+
+    async def on_console(msg):
+        if 'intercepted-params:' in msg.text:
+            params = json.loads(msg.text.split('intercepted-params:')[1])
+            payload = {
+                "key": API_KEY,
+                "method": "turnstile",
+                "sitekey": params["sitekey"],
+                "pageurl": params["pageurl"],
+                "data": params["data"],
+                "pagedata": params["pagedata"],
+                "action": params["action"],
+                "useragent": params["userAgent"],
+                "json": 1,
+            }
+            r = requests.post("https://2captcha.com/in.php", data=payload).json()
+            captcha_id = r["request"]
+
+            for _ in range(20):
+                await asyncio.sleep(5)
+                res = requests.get(
+                    f"https://2captcha.com/res.php?key={API_KEY}&action=get&json=1&id={captcha_id}"
+                ).json()
+                if res["request"] == "CAPCHA_NOT_READY":
+                    continue
+                elif "ERROR" in res["request"]:
+                    logger.error(f"Captcha error: {res['request']}")
+                    return
+                else:
+                    await page.evaluate('cfCallback', res["request"])
+                    logger.info("Captcha resuelto")
+                    return
+
+    page.on('console', lambda msg: asyncio.ensure_future(on_console(msg)))
+
+
+async def extract_contract_details(page, contract_no):
+    await page.goto(YUKON_URL, {'waitUntil': 'networkidle2'})
+    await page.waitForSelector('#P500_KEYWORD')
+
+
+
+    # Click and select "From" year
+    await page.click('#P500_FISCAL_YEAR_FROM')
+    await page.evaluate(
+        '''(year) => {
+            const fromSelect = document.querySelector('#P500_FISCAL_YEAR_FROM');
+            fromSelect.value = year;
+            fromSelect.dispatchEvent(new Event('change', { bubbles: true }));
+        }''',
+        "2007-08"
+    )
+
+    await asyncio.sleep(2)  # Short delay to ensure options refresh
+
+
+
+    await page.evaluate('document.querySelector("#P500_KEYWORD").value = ""')
+    await page.type('#P500_KEYWORD', contract_no)
+    search_button_selector = '#B106150366531214971'
+    await page.waitForSelector(search_button_selector, {'timeout': 20000})
+    await page.click(search_button_selector)
+    logger.info("Botón de búsqueda presionado")
+
+
+    table_selector = '#report_P510_RESULTS'
+
+    await page.waitForSelector(table_selector, timeout=60000)
+    await asyncio.sleep(5)  # Short delay to ensure options refresh
+
+    logger.info("Se termina la espera")
+
+    await asyncio.gather(
+        page.waitForNavigation({'waitUntil': 'networkidle2'}),
+        page.click('table.t-Report-report tbody tr'),
+    )   
+
+   
+
+    await page.waitForSelector('#P520_DESCRIPTION_CONTAINER', timeout=60000)
+    logger.info("Encontro el container")
+    # Campos deseados
+    field_ids = [
+        'P520_DESCRIPTION', 'P520_DEPARTMENT', 'P520_PROJECT_MANAGER',
+        'P520_WORK_COMMUNITY', 'P520_POSTAL_CODE', 'P520_YUKON_BUSINESS',
+        'P520_YFN_BUSINESS', 'P520_CONTRACT_TYPE', 'P520_TENDER_TYPE',
+        'P520_TENDER_CLASS', 'P520_SOA_NUMBER'
+    ]
+
+    detail = {'contract_no': contract_no}
+    for field in field_ids:
+        try:
+            selector = f'#{field}_CONTAINER span'
+            text = await page.evaluate(f'document.querySelector("{selector}")?.innerText.trim()')
+            detail[field.lower()] = text
+        except Exception as e:
+            logger.warning(f"No se pudo extraer {field}: {e}")
+
+    return detail
+
+
+async def main():
+    contract_numbers = get_contract_numbers()
+    processed = load_processed_contracts()
+
+    possible_paths = [
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+        os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'),
+    	'/usr/bin/google-chrome',  # Common path for Linux systems
+        '/usr/local/bin/google-chrome',  # Alternative path in some Linux distributions
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',  # Mac path
+    ]
+
+    chrome_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            chrome_path = path
+            break
+
+    if not chrome_path:
+        logger.error("Chrome executable not found. Please check your installation.")
+        return
+
+    logger.info(f"Using Chrome executable at: {chrome_path}")
+
+    browser = await launch(
+        executablePath=chrome_path,
+        headless=False,
+        devtools=False,
+        autoClose=False,
+        args=[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-blink-features=AutomationControlled',
+        ]
+    )
+
+    
+    page = await browser.newPage()
+
+
+    await page.setUserAgent(
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/115.0.0.0 Safari/537.36'
+        )
+    
+
+
+    await stealth(page)
+    await setup_captcha(page)
+
+    for contract_no in contract_numbers:
+        if contract_no in processed:
+            continue
+        try:
+            logger.info(f"Procesando contrato: {contract_no}")
+            detail = await extract_contract_details(page, contract_no)
+            with open(PROGRESS_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(detail) + "\n")
+        except Exception as e:
+            logger.error(f"Error procesando {contract_no}: {e}")
+            continue
+
+    await browser.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
