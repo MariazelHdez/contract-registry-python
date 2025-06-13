@@ -1,11 +1,14 @@
+import argparse
 import asyncio
 import os
 import json
 import logging
 import psycopg2
-import requests
+import psycopg2.extras
 from pyppeteer import launch
 from pyppeteer_stealth import stealth
+
+from utils import find_chrome_executable, USER_AGENT, solve_turnstile
 # CONFIG
 API_KEY = "2c33ca4e0cc4ad9ec06f50e8c4a3eea9"  
 YUKON_URL = 'https://service.yukon.ca/apps/contract-registry'
@@ -27,13 +30,10 @@ logger = logging.getLogger(__name__)
 
 
 def get_contract_numbers():
-    conn = psycopg2.connect(**DB_CONFIG)
-    cur = conn.cursor()
-    cur.execute("SELECT DISTINCT contract_no FROM contracts")
-    contract_list = [row[0] for row in cur.fetchall()]
-    cur.close()
-    conn.close()
-    return contract_list
+    with psycopg2.connect(**DB_CONFIG) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT contract_no FROM contracts")
+            return [row[0] for row in cur.fetchall()]
 
 
 def load_processed_contracts():
@@ -74,45 +74,41 @@ def insert_details_into_db(jsonl_path: str) -> None:
         "p520_soa_number",
     ]
 
-    conn = psycopg2.connect(**DB_CONFIG)
-    cur = conn.cursor()
+    with psycopg2.connect(**DB_CONFIG) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS contract_details (
+                    contract_no TEXT PRIMARY KEY,
+                    p520_description TEXT,
+                    p520_department TEXT,
+                    p520_project_manager TEXT,
+                    p520_work_community TEXT,
+                    p520_postal_code TEXT,
+                    p520_yukon_business TEXT,
+                    p520_yfn_business TEXT,
+                    p520_contract_type TEXT,
+                    p520_tender_type TEXT,
+                    p520_tender_class TEXT,
+                    p520_soa_number TEXT
+                )
+                """
+            )
 
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS contract_details (
-            contract_no TEXT PRIMARY KEY,
-            p520_description TEXT,
-            p520_department TEXT,
-            p520_project_manager TEXT,
-            p520_work_community TEXT,
-            p520_postal_code TEXT,
-            p520_yukon_business TEXT,
-            p520_yfn_business TEXT,
-            p520_contract_type TEXT,
-            p520_tender_type TEXT,
-            p520_tender_class TEXT,
-            p520_soa_number TEXT
-        )
-        """
-    )
+            insert_query = (
+                "INSERT INTO contract_details (" + ",".join(columns) + ") "
+                "VALUES (" + ",".join(["%s"] * len(columns)) + ") "
+                "ON CONFLICT (contract_no) DO NOTHING"
+            )
 
-    insert_query = (
-        "INSERT INTO contract_details (" + ",".join(columns) + ") "
-        "VALUES (" + ",".join(["%s"] * len(columns)) + ") "
-        "ON CONFLICT (contract_no) DO NOTHING"
-    )
+            values = []
+            for record in records:
+                row = [record.get(col) for col in columns]
+                values.append(row)
 
-    values = []
-    for record in records:
-        row = [record.get(col) for col in columns]
-        values.append(row)
+            psycopg2.extras.execute_batch(cur, insert_query, values)
+        conn.commit()
 
-    for row in values:
-        cur.execute(insert_query, row)
-
-    conn.commit()
-    cur.close()
-    conn.close()
     logger.info("Inserted %d records into contract_details", len(values))
 
 
@@ -142,36 +138,16 @@ async def setup_captcha(page):
     """)
 
     async def on_console(msg):
-        if 'intercepted-params:' in msg.text:
-            params = json.loads(msg.text.split('intercepted-params:')[1])
-            payload = {
-                "key": API_KEY,
-                "method": "turnstile",
-                "sitekey": params["sitekey"],
-                "pageurl": params["pageurl"],
-                "data": params["data"],
-                "pagedata": params["pagedata"],
-                "action": params["action"],
-                "useragent": params["userAgent"],
-                "json": 1,
-            }
-            r = requests.post("https://2captcha.com/in.php", data=payload).json()
-            captcha_id = r["request"]
+        if 'intercepted-params:' not in msg.text:
+            return
 
-            for _ in range(20):
-                await asyncio.sleep(5)
-                res = requests.get(
-                    f"https://2captcha.com/res.php?key={API_KEY}&action=get&json=1&id={captcha_id}"
-                ).json()
-                if res["request"] == "CAPCHA_NOT_READY":
-                    continue
-                elif "ERROR" in res["request"]:
-                    logger.error(f"Captcha error: {res['request']}")
-                    return
-                else:
-                    await page.evaluate('cfCallback', res["request"])
-                    logger.info("Captcha resuelto")
-                    return
+        params = json.loads(msg.text.split('intercepted-params:')[1])
+        try:
+            solution = await solve_turnstile(API_KEY, params)
+            await page.evaluate('cfCallback', solution)
+            logger.info("Captcha resuelto")
+        except Exception as e:
+            logger.error(f"Captcha error: {e}")
 
     page.on('console', lambda msg: asyncio.ensure_future(on_console(msg)))
 
@@ -281,25 +257,10 @@ async def extract_contract_details(page, contract_no):
     return detail
 
 
-async def main():
+async def main(headless: bool = False):
     contract_numbers = get_contract_numbers()
     processed = load_processed_contracts()
-
-    possible_paths = [
-        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-        os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'),
-    	'/usr/bin/google-chrome',  # Common path for Linux systems
-        '/usr/local/bin/google-chrome',  # Alternative path in some Linux distributions
-        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',  # Mac path
-    ]
-
-    chrome_path = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            chrome_path = path
-            break
-
+    chrome_path = find_chrome_executable()
     if not chrome_path:
         logger.error("Chrome executable not found. Please check your installation.")
         return
@@ -315,13 +276,10 @@ async def main():
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-blink-features=AutomationControlled',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
         ]
-    )
-
-    user_agent = (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/115.0.0.0 Safari/537.36'
     )
 
     file_lock = asyncio.Lock()
@@ -331,7 +289,7 @@ async def main():
             return
         async with semaphore:
             page = await browser.newPage()
-            await page.setUserAgent(user_agent)
+            await page.setUserAgent(USER_AGENT)
             await stealth(page)
             await setup_captcha(page)
             try:
@@ -356,4 +314,11 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Extract contract details")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run Chrome in headless mode to avoid opening a browser window",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(headless=args.headless))
