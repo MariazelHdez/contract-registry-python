@@ -12,6 +12,8 @@ from pyppeteer_stealth import stealth
 from pyppeteer.errors import NetworkError, TimeoutError
 from datetime import datetime
 
+from utils import find_chrome_executable, USER_AGENT
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -195,9 +197,8 @@ async def interactions_reports(page, captcha_solved_event, stop_script_flag, bro
        "2007-08", "2008-09", "2009-10", "2010-11", "2011-12", "2012-13", "2013-14", "2014-15","2015-16", "2016-17", "2017-18", "2018-19", "2019-20", "2020-21", "2021-22",  "2022-23", "2023-24", "2024-25", "2025-26"
     ]
 
-    for i in range(len(fiscal_years)):
-        from_year = fiscal_years[i]
-        to_year = fiscal_years[i]
+    for fiscal_year in fiscal_years:
+        from_year = to_year = fiscal_year
 
         logger.info(f"Processing fiscal year range: From {from_year} to {to_year}")
 
@@ -232,20 +233,7 @@ async def interactions_reports(page, captcha_solved_event, stop_script_flag, bro
     logger.info("Finished processing all fiscal years.")
      
 async def main(headless=False):
-    possible_paths = [
-        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-        os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'),
-    	'/usr/bin/google-chrome',  # Common path for Linux systems
-        '/usr/local/bin/google-chrome',  # Alternative path in some Linux distributions
-        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',  # Mac path
-    ]
-
-    chrome_path = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            chrome_path = path
-            break
+    chrome_path = find_chrome_executable()
 
     if not chrome_path:
         logger.error("Chrome executable not found. Please check your installation.")
@@ -271,11 +259,7 @@ async def main(headless=False):
         page = await browser.newPage()
 
         # Set a realistic User-Agent
-        await page.setUserAgent(
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/115.0.0.0 Safari/537.36'
-        )
+        await page.setUserAgent(USER_AGENT)
 
         await stealth(page)
         
