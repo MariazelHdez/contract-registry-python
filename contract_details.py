@@ -5,11 +5,10 @@ import json
 import logging
 import psycopg2
 import psycopg2.extras
-import requests
 from pyppeteer import launch
 from pyppeteer_stealth import stealth
 
-from utils import find_chrome_executable, USER_AGENT
+from utils import find_chrome_executable, USER_AGENT, solve_turnstile
 # CONFIG
 API_KEY = "2c33ca4e0cc4ad9ec06f50e8c4a3eea9"  
 YUKON_URL = 'https://service.yukon.ca/apps/contract-registry'
@@ -139,36 +138,16 @@ async def setup_captcha(page):
     """)
 
     async def on_console(msg):
-        if 'intercepted-params:' in msg.text:
-            params = json.loads(msg.text.split('intercepted-params:')[1])
-            payload = {
-                "key": API_KEY,
-                "method": "turnstile",
-                "sitekey": params["sitekey"],
-                "pageurl": params["pageurl"],
-                "data": params["data"],
-                "pagedata": params["pagedata"],
-                "action": params["action"],
-                "useragent": params["userAgent"],
-                "json": 1,
-            }
-            r = requests.post("https://2captcha.com/in.php", data=payload).json()
-            captcha_id = r["request"]
+        if 'intercepted-params:' not in msg.text:
+            return
 
-            for _ in range(20):
-                await asyncio.sleep(5)
-                res = requests.get(
-                    f"https://2captcha.com/res.php?key={API_KEY}&action=get&json=1&id={captcha_id}"
-                ).json()
-                if res["request"] == "CAPCHA_NOT_READY":
-                    continue
-                elif "ERROR" in res["request"]:
-                    logger.error(f"Captcha error: {res['request']}")
-                    return
-                else:
-                    await page.evaluate('cfCallback', res["request"])
-                    logger.info("Captcha resuelto")
-                    return
+        params = json.loads(msg.text.split('intercepted-params:')[1])
+        try:
+            solution = await solve_turnstile(API_KEY, params)
+            await page.evaluate('cfCallback', solution)
+            logger.info("Captcha resuelto")
+        except Exception as e:
+            logger.error(f"Captcha error: {e}")
 
     page.on('console', lambda msg: asyncio.ensure_future(on_console(msg)))
 

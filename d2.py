@@ -5,14 +5,13 @@ import json
 import logging
 import traceback
 import time
-import requests
 from urllib.parse import urljoin
 from pyppeteer import launch
 from pyppeteer_stealth import stealth
 from pyppeteer.errors import NetworkError, TimeoutError
 from datetime import datetime
 
-from utils import find_chrome_executable, USER_AGENT
+from utils import find_chrome_executable, USER_AGENT, solve_turnstile
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,63 +62,23 @@ async def setup_captcha_handling(page, captcha_solved_event, stop_script_flag, p
     # Attach the console message handler
     async def console_message_handler(msg):
         txt = msg.text
-        if 'intercepted-params:' in txt:
-            params = json.loads(txt.replace('intercepted-params:', ''))
-            print("Intercepted Params:", params)
-            try:
-                # Prepare payload for 2Captcha
-                payload = {
-                    "key": apikey,
-                    "method": "turnstile",
-                    "sitekey": params["sitekey"],
-                    "pageurl": params["pageurl"],
-                    "data": params["data"],
-                    "pagedata": params["pagedata"],
-                    "action": params["action"],
-                    "useragent": params["userAgent"],
-                    "json": 1,
-                }
-                # Send Captcha to 2Captcha
-                response = requests.post("https://2captcha.com/in.php", data=payload)
-                logger.info("Captcha enviado a 2Captcha")
-                captcha_id = response.json()["request"]
-                await asyncio.sleep(2)
-                retries = 0
-                max_retries = 10
-
-                while retries < max_retries:
-                    solution = requests.get(
-                        f"https://2captcha.com/res.php?key={apikey}&action=get&json=1&id={captcha_id}"
-                    ).json()
-                    if solution["request"] == "CAPCHA_NOT_READY":
-                        logger.debug("Captcha aún no está listo...")
-                        await asyncio.sleep(5)
-                        retries += 1
-                    elif "ERROR" in solution["request"]:
-                        logger.error("Error:", solution["request"])
-                        break
-                    else:
-                        logger.info("Captcha resuelto exitosamente")
-                        await page.evaluate('cfCallback', solution["request"])
-
-                        captcha_solved_event.set()
-
-                        if page_ready_event:
-                            page_ready_event.set()
-                        return
-                else:
-                    logger.warning("Failed to solve CAPTCHA after multiple attempts.")
-
-                    stop_script_flag['stop'] = True
-
-                    captcha_solved_event.set()
-            except Exception as e:
-                logger.error("An error occurred while solving Captcha:", e)
-
-                stop_script_flag['stop'] = True
-                captcha_solved_event.set()
-        else:
+        if 'intercepted-params:' not in txt:
             return
+
+        params = json.loads(txt.replace('intercepted-params:', ''))
+        logger.info("Intercepted Params: %s", params)
+
+        try:
+            solution = await solve_turnstile(apikey, params)
+            await page.evaluate('cfCallback', solution)
+
+            captcha_solved_event.set()
+            if page_ready_event:
+                page_ready_event.set()
+        except Exception as e:
+            logger.error("An error occurred while solving Captcha: %s", e)
+            stop_script_flag['stop'] = True
+            captcha_solved_event.set()
 
     page.on('console', lambda msg: asyncio.ensure_future(console_message_handler(msg)))
 
