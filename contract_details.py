@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import os
 import json
@@ -281,7 +282,7 @@ async def extract_contract_details(page, contract_no):
     return detail
 
 
-async def main():
+async def main(headless: bool = False):
     contract_numbers = get_contract_numbers()
     processed = load_processed_contracts()
 
@@ -308,13 +309,16 @@ async def main():
 
     browser = await launch(
         executablePath=chrome_path,
-        headless=False,
+        headless=headless,
         devtools=False,
         autoClose=False,
         args=[
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-blink-features=AutomationControlled',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
         ]
     )
 
@@ -356,4 +360,11 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Extract contract details")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run Chrome in headless mode to avoid opening a browser window",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(headless=args.headless))
