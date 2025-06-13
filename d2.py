@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import os
 import json
@@ -230,7 +231,7 @@ async def interactions_reports(page, captcha_solved_event, stop_script_flag, bro
 
     logger.info("Finished processing all fiscal years.")
      
-async def main():
+async def main(headless=False):
     possible_paths = [
         r'C:\Program Files\Google\Chrome\Application\chrome.exe',
         r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
@@ -254,7 +255,7 @@ async def main():
 
     browser = await launch(
         executablePath=chrome_path,
-        headless=False,
+        headless=headless,
         devtools=False,
         autoClose=False,
         args=[
@@ -325,4 +326,7 @@ async def wait_for_page_ready(page, page_ready_event):
             await asyncio.sleep(3)  # Esperar un poco después de recargar
             
 if __name__ == '__main__':
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description='Download contracts from Yukon registry')
+    parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
+    args = parser.parse_args()
+    asyncio.run(main(headless=args.headless))
