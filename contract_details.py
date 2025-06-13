@@ -308,7 +308,7 @@ async def main():
 
     browser = await launch(
         executablePath=chrome_path,
-        headless=False,
+        headless=True,
         devtools=False,
         autoClose=False,
         args=[
